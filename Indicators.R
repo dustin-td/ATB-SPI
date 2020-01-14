@@ -7,36 +7,10 @@ library(gstat)
 library(httr)
 library(jsonlite)
 source('StatsCanadaAPI.R')
+source('CKAN_API.R')
 
 CKAN_url <- 'http://data.socialprogress.org/'
-CKAN_url <- 'http://data.socialprogress.org/api/3/action/datastore_search'
 api_key <- Sys.getenv('CKAN_API') # Set your API key in .Renviron
-
-CKAN_dl <- function(url, key) {
-  jsonlite::fromJSON(
-    httr::content(
-      httr::GET(url,
-          add_headers(Authorization = key)),
-      'text'
-    )
-  )
-}
-
-CKAN_getdata <- function(url, id, key) {
-  call <- paste0(url, 'api/3/action/package_show?id=', id)
-  res <- CKAN_dl(call, key)
-  res.id <- res$result$resources$id
-  data.table::fread(
-    rawToChar(
-      httr::content(
-        httr::GET(paste0(url, 'datastore/dump/', res.id),
-            add_headers(Authorization=key)),
-        'raw'
-      )
-    )
-  )
-}
-
 
 # Stats Canada ----
 
@@ -145,30 +119,68 @@ sc.pop <- ct.data[HIER_ID == '1.1.1' | HIER_ID == '7.1.1.1',
 
 # Enviromental ----
 
-dir <- '~/Dropbox (Social Progress)/Data/Canada/Alberta/Environmental Indicators/'
+# CMACA shapefile
+cmaca <- st_read(
+  CKAN_dlresource(CKAN_url, 'cmaca-geography', api_key),
+  quiet=T
+) %>% st_transform(4269)
 
-pm25peak <- fread(paste0(dir, 'Peak PM 2_5 2016.csv'))[
+# Alberta province shapefile
+AB <- st_read(
+  CKAN_dlresource(CKAN_url, 'alberta-geography', api_key),
+  quiet=T
+) %>% st_transform(2163)
+
+# Sample grid for IDW predictions
+grid <- st_as_sf(as.data.table(st_sample(AB, 40000))) %>% st_transform(4269)
+
+pm25peak <- CKAN_getdata(CKAN_url, 'peak-pm2-5', api_key)[
   , .(Latitude, Longitude, pm25peak = as.numeric(sub('-', '', Concentration)))
+][
+  !is.na(pm25peak)
+][
+  , as.data.table(
+    st_intersection(
+      st_transform(cmaca, 2163),
+      st_transform(
+        idw(pm25peak~1,
+            st_as_sf(.SD, coords=c('Longitude', 'Latitude'),
+                     crs=4269),
+            grid, idp=16.0), 2163)
+    )
+  )
+][
+  , .(pm25peak = mean(var1.pred, na.rm=T))
+  , by = CMAPUID
 ]
 
-grid = st_as_sf(as.data.table(st_sample(cmaca, 20000)))
-
-g8math.idw = idw(Average.Scale.Score ~ 1, g8math, grid, idp=8.0, weights=g8math$wgt)
-
-g8math.idw$GEOID = apply(st_intersects(jxn.trcts, g8math.idw, sparse = FALSE), 2,
-                         function(col) {
-                           jxn.trcts[which(col), ]$GEOID
-                         })
-
-ozonepeak <- fread(paste0(dir, 'Peak ozone concentrations at monitoring stations.csv'))[
-  , .(Latitude, Longitude, ozone.peak = as.numeric(sub('-', '', Concentration)))
+ozonepeak <- CKAN_getdata(CKAN_url, 'peak-ozone', api_key)[
+  , .(Latitude, Longitude, ozone.peak = Concentration)
+][
+  !is.na(ozone.peak)
+][
+  , as.data.table( 
+    st_intersection( 
+      st_transform(cmaca, 2163), 
+      st_transform(
+        idw(ozone.peak~1, 
+            st_as_sf(.SD, coords=c('Longitude', 'Latitude'),
+                     crs=4269),
+            grid, idp=16.0), 2163)
+    )
+  )
+][
+  , .(ozone.peak = mean(var1.pred, na.rm=T))
+  , by = CMAPUID
 ]
+
+
 
 
 
 # Child Care -----
 
-ccfs <- fread('~/Dropbox (Social Progress)/Data/Canada/Alberta/child-care-information-201612.csv')[
+ccfs <- CKAN_getdata(CKAN_url, 'childcare-information', api_key)[
   , setnames(.SD, names(.SD), make.names(names(.SD)))
 ][
   Accreditation.Status == 'Y' & Type.of.program == 'DAY CARE PROGRAM',
@@ -196,11 +208,8 @@ ccfs <- fread('~/Dropbox (Social Progress)/Data/Canada/Alberta/child-care-inform
 ]
 
 
-
-
 # Maps ----
 
-# cmaca = st_read('~/Dropbox (Social Progress)/Data/Canada/Alberta/CMACA/lcma000b16a_e.shp')
 # 
 # fsa = st_read('~/Dropbox (Social Progress)/Data/Canada/Alberta/forward sortation area/lfsa000a16a_e.shp', stringsAsFactors=F)
 # fsa = fsa[which(fsa$PRUID == '48'), ]
