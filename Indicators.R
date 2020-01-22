@@ -207,6 +207,254 @@ ccfs <- CKAN_getdata(CKAN_url, 'childcare-information', api_key)[
   , ratio := Capacity / as.numeric(pop.under5)
 ]
 
+# Population ----
+
+local_pop <- CKAN_getdata(CKAN_url, 'local-population', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2018
+]
+
+local_pop_children <- local_pop[
+  Age %in% c("00", "01to04", "05to09", "10to14", "15to19")
+][
+  , .(Population = sum(Population)), by=Geography
+][
+  , Subzone := mapply((function (x) substr(x, 1, 4)), Geography)
+][
+  , .(Fractional_Pop = Population / (sum(Population, na.rm=T)), Geography = Geography), by=Subzone
+]
+
+aggr_pop <- CKAN_getdata(CKAN_url, 'aggregate-population', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2018
+]
+
+aggr_pop_no_age <- aggr_pop[
+  , .(Population = sum(Population)), by=Geography
+][
+  , Subzone := mapply((function (x) substr(x, 1, 4)), Geography)
+][
+  , .(Fractional_Pop = Population / (sum(Population, na.rm=T)), Geography = Geography), by=Subzone
+]
+
+setkey(aggr_pop_no_age, Geography)
+
+zonal_pop_no_age = aggr_pop[
+  , Geography := mapply((function (x) substr(x, 1, 4)), Geography)
+][
+  , .(Population = sum(Population)), by=Geography
+]
+
+setkey(zonal_pop_no_age, Geography)
+
+zone_map <- data.table(ZONE_NUMBER=c("Z1", "Z2", "Z3", "Z4", "Z5"), 
+                       ZONE_NAME=c("SOUTH ZONE", "CALGARY ZONE", "CENTRAL ZONE", "EDMONTON ZONE", "NORTH ZONE"))
+
+# Nutrition ----
+
+#num_deaths <- CKAN_getdata(CKAN_url, 'number-of-deaths', api_key)[
+#, setnames(.SD, names(.SD), make.names(names(.SD)))
+#][
+#  grep('Z[0-9].[0-9]$', Geography),
+#][
+#  Year == "2016past",
+#][
+#  Sex == "BOTH",
+#][
+#  , Year := mapply((function (x) strtoi(substr(x, 1, 4))), Year)
+#]
+
+inf_mort <- CKAN_getdata(CKAN_url, 'infant-mortality-detailed', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == "2009to2018"
+][
+  grep('Z[0-9].[0-9]$', Geography)
+]
+
+low_birth_weight <- CKAN_getdata(CKAN_url, 'low-birth-weight-detailed', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  year == "2018"
+][
+  grep('V[0-9].[0-9]$', geography)
+][
+  WEIGHT == 'ALL <2500g'
+][
+  , -c(1:3, 7:10, 12:14)
+]
+
+low_birth_weight_pivot = dcast(low_birth_weight, geography + year ~ WEIGHT, value.var = "LBW_RATE")
+
+life_expectancy <- CKAN_getdata(CKAN_url, 'life-expectancy-at-birth-10-year-combined', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == "2009to2018"
+][
+  grep('Z[0-9](.[0-9](.[A-Z])?)?', Geography)
+][
+  , -c(6:8)
+][
+  Sex == "BOTH"
+]
+
+life_expectancy <- life_expectancy[aggr_pop_no_age, on='Geography'][
+  , .(Life.Expectancy.at.Birth = sum(Life.Expectancy.at.Birth * Fractional_Pop)), by = Subzone
+][
+  , .(Geography=Subzone, Life_Expectancy = Life.Expectancy.at.Birth)
+]
+
+#[
+#  , Geography := mapply((function (x) substr(x, 1, 4)), Geography)
+#][
+#  
+#][, mean(Life.Expectancy.at.Birth), by=(Geography)]
+
+sepsis <- CKAN_getdata(CKAN_url, 'in-hospital-sepsis', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Comparator %notin% c("Alberta", "Canada")
+][
+  , Geography := mapply(function(x) if (nchar(x) > 13) {toupper(substr(x, 1, nchar(x) - 8))} else {toupper(x)}, Comparator)
+][
+  , .(ZONE_NAME = Geography, Result = Indicator.Results.2017.2018)
+][
+  zone_map, on="ZONE_NAME"
+][
+  , .(Geography = ZONE_NUMBER, Sepsis_rate = Result)
+]
+
+# Personal Safety ----
+
+non_violent_deaths <- CKAN_getdata(CKAN_url, 'mortality-rates-by-subzone-various', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  YEAR == "2009to2018"
+][
+  geography != "AB"
+][
+  , -c(1, 2, 4, 8:14)
+]
+
+non_violent_deaths_pivot = dcast(non_violent_deaths, geography + YEAR ~ CAUSE_OF_DEATH, value.var = "MORT_RATE_ADJUSTED")
+
+emergency_visits_injury <- CKAN_getdata(CKAN_url, 'emergency-visit-rate-suicide-violence', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2018
+][
+  grep('Z[0-9].[0-9]$', Geography)
+][
+  , -c(1, 4, 7:11)
+]
+
+emergency_visits_injury_pivot = dcast(emergency_visits_injury, Geography + Year ~ Injury.Type, value.var = "Visit.Rate")
+
+# Health and Wellness ----
+
+diabetes <- CKAN_getdata(CKAN_url, 'diabetes-details', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2017
+][
+  grep('Z[0-9].[0-9]$', Geography)
+][
+  , Subzone := mapply((function (x) substr(x, 1, 4)), Geography)
+][
+  , .(Cases = sum(Prevalent.Cases..Across.all.ages.), Population = sum(Population..Across.all.ages.)), by = Subzone
+][
+  , .(Geography = Subzone, Diabetes_Prevalence = Cases / Population)
+]
+
+emergency_visits_drugs <- CKAN_getdata(CKAN_url, 'emergency-visit-rate-alcohol-drug-opioids', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2018
+][
+  grep('Z[0-9].[0-9]$', Geography)
+][
+  , -c(1, 4, 7:11)
+]
+
+emergency_visits_drugs_pivot = dcast(emergency_visits_drugs, Geography + Year ~ Description, value.var = "Age.Standardized.Visit.Rate")
+
+sti_rates <- CKAN_getdata(CKAN_url, 'sti-subzone-detailed', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year %in% c('2018Q1', '2018Q2', '2018Q3', '2018Q4')
+][
+  grep('Z[0-9].[0-9]$', Geography)
+][
+  Sex == "BOTH"
+][
+  , .(Case.Counts = sum(Case.Counts)), by = "Geography"
+][zonal_pop_no_age, on="Geography"][
+  , .(STI_Rate = (Case.Counts / Population), Geography = Geography)
+]
+
+child_immunization <- CKAN_getdata(CKAN_url, 'child-immunization', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2018
+][
+  grep('Z[0-9].[0-9]', Geography)
+][
+  , .(COVERAGE_RATE = mean(Coverage.Rate)), by=Geography
+][
+  local_pop_children, on='Geography'
+][
+  , .(COVERAGE_RATE = sum(COVERAGE_RATE * Fractional_Pop)), by = Subzone
+][
+  , .(Geography=Subzone, COVERAGE_RATE = COVERAGE_RATE)
+]
+
+mental_health <- CKAN_getdata(CKAN_url, 'mental-health-details', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2017
+][
+  Geography != "ALBERTA"
+][
+  Category == "Excellent or Very Good"
+][
+  , .(ZONE_NAME = Geography, Percent = Percent)
+][
+  zone_map, on="ZONE_NAME"
+][
+  , .(Geography = ZONE_NUMBER, Good_Mental_Health_Rate = Percent)
+]
+
+activity <- CKAN_getdata(CKAN_url, 'activity-details', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  Year == 2017
+][
+  Geography != "ALBERTA"
+][
+  Activity.Category == "Active - moderately active"
+][
+  , .(ZONE_NAME = Geography, Percent = Percent)
+][
+  zone_map, on="ZONE_NAME"
+][
+  , .(Geography = ZONE_NUMBER, Good_Mental_Health_Rate = Percent)
+]
+
+# Personal Freedom and Choice ----
+
+oral_contraceptives <- CKAN_getdata(CKAN_url, 'oral-contraceptives-details', api_key)[
+  , setnames(.SD, names(.SD), make.names(names(.SD)))
+][
+  YEAR == 2018
+][
+  grep('Z[0-9].[0-9]$', GEOGRAPHY)
+][
+  AGE == "ALL"
+][
+  , .(DISPENSATION_RATE = sum(DISPENSATION_RATE)), by=GEOGRAPHY
+]
 
 # Maps ----
 
